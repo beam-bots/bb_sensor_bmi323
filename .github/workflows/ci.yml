@@ -1,0 +1,27 @@
+# SPDX-FileCopyrightText: 2026 James Harton
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+  security-events: write
+  pages: write
+  id-token: write
+
+jobs:
+  CI:
+    uses: beam-bots/.github/.github/workflows/elixir-ci.yml@98a8288e22ebc1fd88a8f9ef1860cc663e2c402f # main
+    with:
+      enable-docs-deploy: true
+      enable-release: true
+    secrets:
+      HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
