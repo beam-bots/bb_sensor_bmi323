@@ -1,3 +1,8 @@
+<!--
+SPDX-FileCopyrightText: 2026 James Harton
+
+SPDX-License-Identifier: Apache-2.0
+-->
 # AGENTS.md
 
 This file provides guidance to AI coding agents when working with code in this repository.
@@ -36,9 +41,18 @@ the `BB.Sensor` behaviour:
   path]`, and reschedules.
 - `handle_info({BMI323.Sampler, _pid, frames}, state)` (interrupt mode)
   publishes one `BB.Message.Sensor.Imu` per frame.
-- `handle_options/2` recomputes the publish interval when `publish_rate` is
-  bound to a runtime parameter (polling mode only). Other options require
-  a restart to take effect.
+- `handle_options/2` distinguishes live-applicable changes from
+  structural ones:
+  - `publish_rate`, `accelerometer_*`, `gyroscope_*` are applied in place
+    (recompute interval, re-issue `configure_*` to the chip).
+  - `mode`, `bus`, `address`, `int1_pin`, `watermark_frames` return
+    `{:stop, :reconfigure}` so the supervisor restarts the sensor with
+    fresh params. `BB.Sensor.Server` uses the GenServer default
+    `restart: :permanent` (via `BB.Process.child_spec/6` which sets no
+    `:restart` key), so the restart-on-reconfigure pattern works cleanly.
+
+  State carries the last resolved `opts` map so `handle_options/2` can
+  diff against it. Don't drop that field.
 
 The BMI323 has no magnetometer, so published `Imu` messages carry an
 identity quaternion for `orientation`. Pair this sensor with

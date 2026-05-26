@@ -12,7 +12,9 @@ defmodule BB.Sensor.BMI323Test do
   alias BB.Math.Vec3
   alias BB.Message
   alias BB.Message.Sensor.Imu
+  alias BB.Robot.Units
   alias BB.Sensor.BMI323, as: Sensor
+  alias Localize.Unit
 
   @sensor_name :imu_test
   @sensor_path [:base, @sensor_name]
@@ -92,6 +94,7 @@ defmodule BB.Sensor.BMI323Test do
       assert state.bb == default_bb_context()
       assert state.publish_interval_ms == 10
       assert state.bmi == fake_bmi()
+      assert state.opts.bus == "i2c-1"
       assert_receive :tick, 50
     end
 
@@ -303,6 +306,7 @@ defmodule BB.Sensor.BMI323Test do
         bb: default_bb_context(),
         bmi: fake_bmi(),
         mode: :polling,
+        opts: Map.new(polling_opts()),
         publish_interval_ms: 1000
       }
 
@@ -376,6 +380,7 @@ defmodule BB.Sensor.BMI323Test do
         bb: default_bb_context(),
         bmi: fake_bmi(),
         mode: :interrupt,
+        opts: Map.new(interrupt_opts()),
         sampler: :fake_sampler_pid
       }
 
@@ -414,30 +419,148 @@ defmodule BB.Sensor.BMI323Test do
   end
 
   describe "handle_options/2" do
-    test "polling mode: recomputes publish_interval_ms" do
-      state = %{
+    defp polling_state(opts_overrides \\ []) do
+      opts = Map.new(polling_opts(opts_overrides))
+
+      %{
         bb: default_bb_context(),
         bmi: fake_bmi(),
         mode: :polling,
-        publish_interval_ms: 1000
+        opts: opts,
+        publish_interval_ms: hertz_to_ms(opts.publish_rate)
       }
+    end
 
-      assert {:ok, new_state} =
-               Sensor.handle_options([publish_rate: ~u(50 hertz)], state)
+    defp interrupt_state(opts_overrides \\ []) do
+      opts = Map.new(interrupt_opts(opts_overrides))
 
+      %{
+        bb: default_bb_context(),
+        bmi: fake_bmi(),
+        mode: :interrupt,
+        opts: opts,
+        sampler: :fake_sampler_pid
+      }
+    end
+
+    defp hertz_to_ms(rate) do
+      rate
+      |> Unit.convert!("hertz")
+      |> Units.extract_float()
+      |> then(&round(1000 / &1))
+    end
+
+    test "recomputes publish_interval_ms when publish_rate changes" do
+      state = polling_state()
+      stub(BMI323, :configure_accelerometer, fn bmi, _ -> {:ok, bmi} end)
+      stub(BMI323, :configure_gyroscope, fn bmi, _ -> {:ok, bmi} end)
+      new_opts = polling_opts(publish_rate: ~u(50 hertz))
+
+      assert {:ok, new_state} = Sensor.handle_options(new_opts, state)
       assert new_state.publish_interval_ms == 20
       assert new_state.bmi == state.bmi
     end
 
-    test "interrupt mode: ignores publish_rate changes" do
-      state = %{
-        bb: default_bb_context(),
-        bmi: fake_bmi(),
-        mode: :interrupt,
-        sampler: :fake_sampler_pid
-      }
+    test "applies accelerometer range / odr / mode changes live" do
+      state = polling_state()
+      stub(BMI323, :configure_gyroscope, fn bmi, _ -> {:ok, bmi} end)
+      test_pid = self()
 
-      assert {:ok, ^state} = Sensor.handle_options([publish_rate: ~u(50 hertz)], state)
+      expect(BMI323, :configure_accelerometer, fn bmi, opts ->
+        send(test_pid, {:accel_opts, opts})
+        {:ok, bmi}
+      end)
+
+      new_opts =
+        polling_opts(
+          accelerometer_range: 4,
+          accelerometer_odr: 400,
+          accelerometer_mode: :high_performance
+        )
+
+      assert {:ok, _} = Sensor.handle_options(new_opts, state)
+
+      assert_receive {:accel_opts, opts}
+      assert opts[:range] == 4
+      assert opts[:odr] == 400
+      assert opts[:mode] == :high_performance
+    end
+
+    test "applies gyroscope range / odr / mode changes live" do
+      state = polling_state()
+      stub(BMI323, :configure_accelerometer, fn bmi, _ -> {:ok, bmi} end)
+      test_pid = self()
+
+      expect(BMI323, :configure_gyroscope, fn bmi, opts ->
+        send(test_pid, {:gyro_opts, opts})
+        {:ok, bmi}
+      end)
+
+      new_opts =
+        polling_opts(
+          gyroscope_range: 500,
+          gyroscope_odr: 100,
+          gyroscope_mode: :low_power
+        )
+
+      assert {:ok, _} = Sensor.handle_options(new_opts, state)
+
+      assert_receive {:gyro_opts, opts}
+      assert opts[:range] == 500
+      assert opts[:odr] == 100
+      assert opts[:mode] == :low_power
+    end
+
+    test "does not call configure_* when only publish_rate changes" do
+      state = polling_state()
+      reject(&BMI323.configure_accelerometer/2)
+      reject(&BMI323.configure_gyroscope/2)
+
+      assert {:ok, _} = Sensor.handle_options(polling_opts(publish_rate: ~u(50 hertz)), state)
+    end
+
+    test "stops on configure_accelerometer failure" do
+      state = polling_state()
+      stub(BMI323, :configure_gyroscope, fn bmi, _ -> {:ok, bmi} end)
+      expect(BMI323, :configure_accelerometer, fn _, _ -> {:error, :bad_range} end)
+
+      assert {:stop, :bad_range} =
+               Sensor.handle_options(polling_opts(accelerometer_range: 4), state)
+    end
+
+    test "stops with :reconfigure when mode changes" do
+      state = polling_state()
+
+      assert {:stop, :reconfigure} =
+               Sensor.handle_options(interrupt_opts(), state)
+    end
+
+    test "stops with :reconfigure when bus changes" do
+      state = polling_state()
+
+      assert {:stop, :reconfigure} =
+               Sensor.handle_options(polling_opts(bus: "i2c-9"), state)
+    end
+
+    test "stops with :reconfigure when address changes" do
+      state = polling_state()
+
+      assert {:stop, :reconfigure} =
+               Sensor.handle_options(polling_opts(address: 0x69), state)
+    end
+
+    test "stops with :reconfigure when int1_pin changes (interrupt mode)" do
+      state = interrupt_state()
+
+      assert {:stop, :reconfigure} =
+               Sensor.handle_options(interrupt_opts(int1_pin: 22), state)
+    end
+
+    test "stops with :reconfigure when watermark_frames changes (interrupt mode)" do
+      state = interrupt_state()
+
+      assert {:stop, :reconfigure} =
+               Sensor.handle_options(interrupt_opts(watermark_frames: 16), state)
     end
   end
 end

@@ -8,14 +8,41 @@ defmodule BB.Sensor.BMI323 do
   BMI323 6-DoF inertial measurement unit (3-axis accelerometer + 3-axis
   gyroscope) over I2C.
 
+  The BMI323 has no magnetometer, so this sensor cannot determine
+  orientation on its own — every published `Imu` carries
+  `BB.Math.Quaternion.identity/0` for the `orientation` field. **You
+  almost always want to pair this sensor with an orientation estimator**
+  such as the ones in
+  [`bb_estimator_ahrs`](https://hex.pm/packages/bb_estimator_ahrs)
+  (Madgwick, Mahony, Complementary). See
+  [Pairing with an AHRS estimator](#module-pairing-with-an-ahrs-estimator).
+
   ## Modes
 
-  - `:polling` — periodically calls `BMI323.read_imu/1` at `publish_rate`.
-    Simple and low-jitter at modest rates (≤200 Hz); the BEAM scheduler
-    can lose samples between polls at higher ODRs.
+  Pick based on output data rate:
+
+  - `:polling` — periodically calls `BMI323.read_imu/1` at
+    `publish_rate`. Low-overhead, low-jitter at modest rates. Use when
+    ODR ≤ 200 Hz. Above ~200 Hz the BEAM scheduler starts to lose
+    samples between polls.
   - `:interrupt` — runs `BMI323.Sampler` which buffers samples in the
-    chip's on-chip FIFO and fires the host's INT1 GPIO when a configurable
-    watermark is reached. Reliable up to the chip's 6.4 kHz ODR.
+    chip's on-chip 2 KB FIFO and fires the host's INT1 GPIO when a
+    configurable watermark is reached. Reliable up to the chip's
+    6.4 kHz ODR. Requires INT1 wired to a host GPIO.
+
+  In interrupt mode, samples arrive in bursts of `watermark_frames` at
+  once. With ODR 800 Hz and watermark 8, you'll see batches every 10 ms.
+  Downstream consumers should be designed to handle a burst (an estimator
+  like the AHRS filters integrates each sample with its own dt, so it
+  copes naturally).
+
+  ## Coordinate frame
+
+  Axes are the chip's own +X / +Y / +Z (see the BMI323 datasheet
+  §3.2 for the silkscreen orientation). The BB topology entity this
+  sensor attaches to *is* its coordinate frame — orient the IMU on the
+  link as appropriate and apply a static transform in your downstream
+  consumer if the chip mounting axes don't match the link axes.
 
   ## Example DSL Usage
 
@@ -48,6 +75,21 @@ defmodule BB.Sensor.BMI323 do
         watermark_frames: 8
       }
 
+  ## Pairing with an AHRS estimator
+
+  The BMI323 produces raw acceleration + angular-velocity samples; turning
+  those into an orientation needs sensor fusion. Attach an estimator from
+  `bb_estimator_ahrs`:
+
+      sensor :imu, {BB.Sensor.BMI323, bus: "i2c-1", ...} do
+        estimator :orientation, {BB.Estimator.Ahrs.Madgwick, beta: 0.1}
+      end
+
+  The estimator subscribes to this sensor's `Imu` messages, replaces the
+  identity quaternion with a fused orientation, and republishes. See
+  `BB.Estimator.Ahrs.Madgwick`, `BB.Estimator.Ahrs.Mahony`, and
+  `BB.Estimator.Ahrs.Complementary` for the algorithm choices.
+
   ## Options
 
   - `bus` — I2C bus name (e.g. `"i2c-1"`) — required.
@@ -56,7 +98,9 @@ defmodule BB.Sensor.BMI323 do
   - `accelerometer_range` — `2 | 4 | 8 | 16` g (default `8`).
   - `accelerometer_odr` — output data rate in Hz (default `200`).
   - `accelerometer_mode` — `:disabled | :low_power | :normal |
-    :high_performance` (default `:normal`).
+    :high_performance` (default `:normal`). Setting either axis to
+    `:disabled` powers it down — the IMU will publish constant /
+    invalid values for that axis until the mode is changed back.
   - `gyroscope_range` — `125 | 250 | 500 | 1000 | 2000` °/s (default
     `2000`).
   - `gyroscope_odr` — output data rate in Hz (default `200`).
@@ -76,18 +120,45 @@ defmodule BB.Sensor.BMI323 do
   - `angular_velocity` — gyroscope reading as `BB.Math.Vec3` in rad/s.
   - `linear_acceleration` — accelerometer reading as `BB.Math.Vec3` in
     m/s².
-  - `orientation` — `BB.Math.Quaternion.identity/0`. The BMI323 has no
-    magnetometer; pair this sensor with `bb_estimator_ahrs` to compute
-    a real orientation.
+  - `orientation` — `BB.Math.Quaternion.identity/0` (see above).
 
   ## Runtime parameter changes
 
-  Only `publish_rate` is reconfigurable at runtime (polling mode). Changes
-  to `bus`, `address`, `mode`, sensor ranges / ODRs, or `int1_pin` require
-  a restart to take effect.
+  Options handled live (no restart):
 
-  A single failed read is logged at warning level and does not crash the
-  process — the polling loop or interrupt handler continues.
+  - `publish_rate` (polling mode) — interval is recomputed.
+  - `accelerometer_range` / `accelerometer_odr` / `accelerometer_mode`
+    — `BMI323.configure_accelerometer/2` is re-issued.
+  - `gyroscope_range` / `gyroscope_odr` / `gyroscope_mode` —
+    `BMI323.configure_gyroscope/2` is re-issued.
+
+  Options that trigger `{:stop, :reconfigure}` (supervisor restarts the
+  sensor with new params):
+
+  - `mode`, `bus`, `address`, `int1_pin`, `watermark_frames`.
+
+  ## Error handling
+
+  A single failed read or reconfiguration is logged at warning level and
+  does not crash the process — the polling loop or interrupt handler
+  continues. Persistent failures will manifest as silence on the topic
+  rather than a crash.
+
+  ## Troubleshooting
+
+  - `{:stop, {:chip_id_mismatch, got: id, expected: 0x43}}` — the device
+    at the configured I2C address is not a BMI323. Check `address`
+    (`0x68` when SDO is tied to GND, `0x69` when tied to VDDIO), the
+    physical bus, and that the chip is actually powered.
+  - `{:stop, :no_such_bus}` from `Wafer.Driver.Circuits.I2C.acquire/1`
+    — the `bus` string doesn't match any `/dev/i2c-*` device. On Linux
+    list available buses with `i2cdetect -l`.
+  - `{:stop, :int1_pin_required_for_interrupt_mode}` — `mode:
+    :interrupt` was set without an `int1_pin`.
+  - GPIO acquire failure in interrupt mode — the pin may already be
+    exported, owned by another process, or not exist on this board.
+  - Constant / silently-wrong samples after changing `*_mode` — check
+    you didn't leave an axis on `:disabled`; that powers it down.
   """
 
   use BB.Sensor
@@ -229,14 +300,54 @@ defmodule BB.Sensor.BMI323 do
 
   def handle_info(_other, state), do: {:noreply, state}
 
+  @structural_keys [:mode, :bus, :address, :int1_pin, :watermark_frames]
+
   @impl BB.Sensor
-  def handle_options(new_opts, %{mode: :polling} = state) do
+  def handle_options(new_opts, state) do
     new_opts = Map.new(new_opts)
-    publish_interval_ms = hertz_to_ms(new_opts.publish_rate)
-    {:ok, %{state | publish_interval_ms: publish_interval_ms}}
+
+    if structural_change?(new_opts, state.opts) do
+      {:stop, :reconfigure}
+    else
+      apply_live_changes(new_opts, state)
+    end
   end
 
-  def handle_options(_new_opts, state), do: {:ok, state}
+  defp structural_change?(new_opts, old_opts) do
+    Enum.any?(@structural_keys, fn key ->
+      Map.get(new_opts, key) != Map.get(old_opts, key)
+    end)
+  end
+
+  defp apply_live_changes(new_opts, state) do
+    with {:ok, bmi} <- maybe_reconfigure_accel(state.bmi, new_opts, state.opts),
+         {:ok, bmi} <- maybe_reconfigure_gyro(bmi, new_opts, state.opts) do
+      publish_interval_ms = hertz_to_ms(new_opts.publish_rate)
+
+      {:ok, %{state | bmi: bmi, publish_interval_ms: publish_interval_ms, opts: new_opts}}
+    else
+      {:error, reason} -> {:stop, reason}
+    end
+  end
+
+  @accel_keys [:accelerometer_range, :accelerometer_odr, :accelerometer_mode]
+  @gyro_keys [:gyroscope_range, :gyroscope_odr, :gyroscope_mode]
+
+  defp maybe_reconfigure_accel(bmi, new_opts, old_opts) do
+    if Enum.any?(@accel_keys, &(Map.get(new_opts, &1) != Map.get(old_opts, &1))) do
+      configure_accelerometer(bmi, new_opts)
+    else
+      {:ok, bmi}
+    end
+  end
+
+  defp maybe_reconfigure_gyro(bmi, new_opts, old_opts) do
+    if Enum.any?(@gyro_keys, &(Map.get(new_opts, &1) != Map.get(old_opts, &1))) do
+      configure_gyroscope(bmi, new_opts)
+    else
+      {:ok, bmi}
+    end
+  end
 
   defp validate_mode(%{mode: :interrupt, int1_pin: nil}),
     do: {:error, :int1_pin_required_for_interrupt_mode}
@@ -273,6 +384,7 @@ defmodule BB.Sensor.BMI323 do
       bb: opts.bb,
       bmi: bmi,
       mode: :polling,
+      opts: opts,
       publish_interval_ms: publish_interval_ms
     }
 
@@ -294,6 +406,7 @@ defmodule BB.Sensor.BMI323 do
         bb: opts.bb,
         bmi: bmi,
         mode: :interrupt,
+        opts: opts,
         sampler: sampler
       }
 
