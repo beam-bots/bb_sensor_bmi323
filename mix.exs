@@ -78,7 +78,7 @@ defmodule BB.Sensor.BMI323.MixProject do
 
   defp deps do
     [
-      {:bb, bb_dep("~> 0.19")},
+      {:bb, bb_dep("~> 0.20")},
       {:bmi323, "~> 0.1"},
       {:circuits_gpio, "~> 2.0"},
       {:circuits_i2c, "~> 2.0"},
