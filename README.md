@@ -4,7 +4,16 @@ SPDX-FileCopyrightText: 2026 James Harton
 SPDX-License-Identifier: Apache-2.0
 -->
 
+<img src="https://github.com/beam-bots/bb/blob/main/logos/beam_bots_logo.png?raw=true" alt="Beam Bots Logo" width="250" />
+
 # bb_sensor_bmi323
+
+[![CI](https://github.com/beam-bots/bb_sensor_bmi323/actions/workflows/ci.yml/badge.svg)](https://github.com/beam-bots/bb_sensor_bmi323/actions/workflows/ci.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache--2.0-green.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Hex version badge](https://img.shields.io/hexpm/v/bb_sensor_bmi323.svg)](https://hex.pm/packages/bb_sensor_bmi323)
+[![Hexdocs badge](https://img.shields.io/badge/docs-hexdocs-purple)](https://hexdocs.pm/bb_sensor_bmi323)
+[![REUSE status](https://api.reuse.software/badge/github.com/beam-bots/bb_sensor_bmi323)](https://api.reuse.software/info/github.com/beam-bots/bb_sensor_bmi323)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/beam-bots/bb_sensor_bmi323)
 
 [Beam Bots](https://github.com/beam-bots/bb) integration for the Bosch
 [BMI323](https://www.bosch-sensortec.com/products/motion-sensors/imus/bmi323/)
