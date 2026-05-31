@@ -346,26 +346,17 @@ defmodule BB.Sensor.BMI323Test do
       drain_self_tick()
     end
 
-    test "skips publishing on read error and stays alive", %{state: state} do
-      stub(BMI323, :read_imu, fn _ -> {:error, :i2c_timeout} end)
+    test "raises on read error so the supervisor sees the failure", %{state: state} do
+      stub(BMI323, :read_imu, fn _ -> {:error, :no_device} end)
       reject(&BB.publish/3)
 
-      assert {:noreply, ^state} = Sensor.handle_info(:tick, state)
-      drain_self_tick()
+      assert_raise MatchError, fn -> Sensor.handle_info(:tick, state) end
+      assert :no_tick = drain_self_tick()
     end
 
     test "reschedules a tick at publish_interval_ms", %{state: state} do
       stub(BMI323, :read_imu, fn _ -> {:ok, sample()} end)
       stub(BB, :publish, fn _, _, _ -> :ok end)
-
-      state = %{state | publish_interval_ms: 10}
-      Sensor.handle_info(:tick, state)
-
-      assert_receive :tick, 50
-    end
-
-    test "reschedules even after a read error", %{state: state} do
-      stub(BMI323, :read_imu, fn _ -> {:error, :i2c_timeout} end)
 
       state = %{state | publish_interval_ms: 10}
       Sensor.handle_info(:tick, state)

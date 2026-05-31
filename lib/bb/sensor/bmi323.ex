@@ -139,10 +139,12 @@ defmodule BB.Sensor.BMI323 do
 
   ## Error handling
 
-  A single failed read or reconfiguration is logged at warning level and
-  does not crash the process — the polling loop or interrupt handler
-  continues. Persistent failures will manifest as silence on the topic
-  rather than a crash.
+  Read failures crash the process — going silent on the topic would
+  hide a dead sensor from the supervisor and from downstream
+  consumers. The supervisor restarts the process per its restart
+  strategy; if the device is genuinely gone (e.g. a USB-attached bus
+  disappeared), `init/1` will fail to reacquire and the restart
+  intensity limit propagates the failure up the tree.
 
   ## Troubleshooting
 
@@ -174,8 +176,6 @@ defmodule BB.Sensor.BMI323 do
   alias Localize.Unit
   alias Wafer.Driver.Circuits.GPIO, as: CircuitsGPIO
   alias Wafer.Driver.Circuits.I2C, as: CircuitsI2C
-
-  require Logger
 
   @modes [:polling, :interrupt]
   @accel_ranges [2, 4, 8, 16]
@@ -281,14 +281,8 @@ defmodule BB.Sensor.BMI323 do
 
   @impl BB.Sensor
   def handle_info(:tick, %{mode: :polling} = state) do
-    case BMI323.read_imu(state.bmi) do
-      {:ok, sample} ->
-        publish_sample(state, sample)
-
-      {:error, reason} ->
-        Logger.warning("BMI323 read failed at #{inspect(state.bb.path)}: #{inspect(reason)}")
-    end
-
+    {:ok, sample} = BMI323.read_imu(state.bmi)
+    publish_sample(state, sample)
     schedule_tick(state.publish_interval_ms)
     {:noreply, state}
   end
