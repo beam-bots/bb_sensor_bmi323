@@ -9,7 +9,7 @@ defmodule BB.Sensor.BMI323.MixProject do
   Beam Bots integration for the Bosch BMI323 6-DoF IMU over I2C.
   """
 
-  @version "0.1.2"
+  @version "0.1.3"
 
   def project do
     [

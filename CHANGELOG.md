@@ -10,6 +10,15 @@ See [Conventional Commits](Https://conventionalcommits.org) for commit guideline
 
 <!-- changelog -->
 
+## [v0.1.3](https://github.com/beam-bots/bb_sensor_bmi323/compare/v0.1.2...v0.1.3) (2026-06-25)
+
+
+
+
+### Improvements:
+
+* support bb 0.20.3 robot_opts/0 child spec (#22) by James Harton
+
 ## [v0.1.2](https://github.com/beam-bots/bb_sensor_bmi323/compare/v0.1.1...v0.1.2) (2026-05-31)
 
 
