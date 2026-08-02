@@ -21,7 +21,7 @@ defmodule Mix.Tasks.BbSensorBmi323.InstallTest do
       |> assert_has_patch("lib/test/robot.ex", """
       + |    group :config do
       + |      group :bmi323 do
-      + |        param(:bus, type: :string, doc: "I2C bus name (e.g. \\"i2c-1\\")")
+      + |        param :bus, type: :string, doc: "I2C bus name (e.g. \\"i2c-1\\")"
       """)
     end
   end
