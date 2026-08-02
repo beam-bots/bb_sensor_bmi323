@@ -12,9 +12,7 @@ defmodule BB.Sensor.BMI323Test do
   alias BB.Math.Vec3
   alias BB.Message
   alias BB.Message.Sensor.Imu
-  alias BB.Robot.Units
   alias BB.Sensor.BMI323, as: Sensor
-  alias Localize.Unit
 
   @sensor_name :imu_test
   @sensor_path [:base, @sensor_name]
@@ -92,7 +90,7 @@ defmodule BB.Sensor.BMI323Test do
       assert {:ok, state} = Sensor.init(polling_opts())
       assert state.mode == :polling
       assert state.bb == default_bb_context()
-      assert state.publish_interval_ms == 10
+      assert state.loop.period_ns == 10_000_000
       assert state.bmi == fake_bmi()
       assert state.opts.bus == "i2c-1"
       assert_receive :tick, 50
@@ -191,12 +189,12 @@ defmodule BB.Sensor.BMI323Test do
     test "translates publish_rate to interval in milliseconds" do
       stub_acquire_success()
 
-      assert {:ok, %{publish_interval_ms: 1000}} =
+      assert {:ok, %{loop: %{period_ns: 1_000_000_000}}} =
                Sensor.init(polling_opts(publish_rate: ~u(1 hertz)))
 
       drain_self_tick()
 
-      assert {:ok, %{publish_interval_ms: 2}} =
+      assert {:ok, %{loop: %{period_ns: 2_000_000}}} =
                Sensor.init(polling_opts(publish_rate: ~u(500 hertz)))
 
       drain_self_tick()
@@ -307,7 +305,7 @@ defmodule BB.Sensor.BMI323Test do
         bmi: fake_bmi(),
         mode: :polling,
         opts: Map.new(polling_opts()),
-        publish_interval_ms: 1000
+        loop: BB.Loop.new(default_bb_context(), clock: {:rate, ~u(1 hertz)})
       }
 
       {:ok, state: state}
@@ -322,7 +320,11 @@ defmodule BB.Sensor.BMI323Test do
         :ok
       end)
 
-      assert {:noreply, ^state} = Sensor.handle_info(:tick, state)
+      # Everything but the loop is carried through untouched; the loop advances
+      # its deadline and tick count on every tick.
+      assert {:noreply, new_state} = Sensor.handle_info(:tick, state)
+      assert Map.delete(new_state, :loop) == Map.delete(state, :loop)
+      assert new_state.loop.ticks == state.loop.ticks + 1
 
       assert_receive {:published, TestRobot, [:sensor, :base, @sensor_name], payload}
       assert payload.orientation == Quaternion.identity()
@@ -354,11 +356,11 @@ defmodule BB.Sensor.BMI323Test do
       assert :no_tick = drain_self_tick()
     end
 
-    test "reschedules a tick at publish_interval_ms", %{state: state} do
+    test "reschedules a tick at the publish rate", %{state: state} do
       stub(BMI323, :read_imu, fn _ -> {:ok, sample()} end)
       stub(BB, :publish, fn _, _, _ -> :ok end)
 
-      state = %{state | publish_interval_ms: 10}
+      state = %{state | loop: BB.Loop.new(default_bb_context(), clock: {:rate, ~u(100 hertz)})}
       Sensor.handle_info(:tick, state)
 
       assert_receive :tick, 50
@@ -418,7 +420,7 @@ defmodule BB.Sensor.BMI323Test do
         bmi: fake_bmi(),
         mode: :polling,
         opts: opts,
-        publish_interval_ms: hertz_to_ms(opts.publish_rate)
+        loop: BB.Loop.new(default_bb_context(), clock: {:rate, opts.publish_rate})
       }
     end
 
@@ -434,21 +436,14 @@ defmodule BB.Sensor.BMI323Test do
       }
     end
 
-    defp hertz_to_ms(rate) do
-      rate
-      |> Unit.convert!("hertz")
-      |> Units.extract_float()
-      |> then(&round(1000 / &1))
-    end
-
-    test "recomputes publish_interval_ms when publish_rate changes" do
+    test "rebuilds the loop when publish_rate changes" do
       state = polling_state()
       stub(BMI323, :configure_accelerometer, fn bmi, _ -> {:ok, bmi} end)
       stub(BMI323, :configure_gyroscope, fn bmi, _ -> {:ok, bmi} end)
       new_opts = polling_opts(publish_rate: ~u(50 hertz))
 
       assert {:ok, new_state} = Sensor.handle_options(new_opts, state)
-      assert new_state.publish_interval_ms == 20
+      assert new_state.loop.period_ns == 20_000_000
       assert new_state.bmi == state.bmi
     end
 
