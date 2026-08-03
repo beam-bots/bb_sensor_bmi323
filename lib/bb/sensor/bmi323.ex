@@ -172,8 +172,6 @@ defmodule BB.Sensor.BMI323 do
   alias BB.Math.Vec3
   alias BB.Message
   alias BB.Message.Sensor.Imu
-  alias BB.Robot.Units
-  alias Localize.Unit
   alias Wafer.Driver.Circuits.GPIO, as: CircuitsGPIO
   alias Wafer.Driver.Circuits.I2C, as: CircuitsI2C
 
@@ -281,10 +279,10 @@ defmodule BB.Sensor.BMI323 do
 
   @impl BB.Sensor
   def handle_info(:tick, %{mode: :polling} = state) do
+    {_dt, _skipped, loop} = BB.Loop.tick(state.loop)
     {:ok, sample} = BMI323.read_imu(state.bmi)
     publish_sample(state, sample)
-    schedule_tick(state.publish_interval_ms)
-    {:noreply, state}
+    {:noreply, %{state | loop: loop}}
   end
 
   def handle_info({BMI323.Sampler, _pid, frames}, %{mode: :interrupt} = state) do
@@ -316,9 +314,7 @@ defmodule BB.Sensor.BMI323 do
   defp apply_live_changes(new_opts, state) do
     with {:ok, bmi} <- maybe_reconfigure_accel(state.bmi, new_opts, state.opts),
          {:ok, bmi} <- maybe_reconfigure_gyro(bmi, new_opts, state.opts) do
-      publish_interval_ms = hertz_to_ms(new_opts.publish_rate)
-
-      {:ok, %{state | bmi: bmi, publish_interval_ms: publish_interval_ms, opts: new_opts}}
+      {:ok, %{state | bmi: bmi, loop: rebuild_loop(state, new_opts), opts: new_opts}}
     else
       {:error, reason} -> {:stop, reason}
     end
@@ -372,17 +368,14 @@ defmodule BB.Sensor.BMI323 do
   end
 
   defp start_mode(bmi, %{mode: :polling} = opts) do
-    publish_interval_ms = hertz_to_ms(opts.publish_rate)
-
     state = %{
       bb: opts.bb,
       bmi: bmi,
       mode: :polling,
       opts: opts,
-      publish_interval_ms: publish_interval_ms
+      loop: BB.Loop.arm(BB.Loop.new(opts.bb, clock: {:rate, opts.publish_rate}))
     }
 
-    schedule_tick(publish_interval_ms)
     {:ok, state}
   end
 
@@ -431,14 +424,13 @@ defmodule BB.Sensor.BMI323 do
     BB.publish(state.bb.robot, [:sensor | state.bb.path], message)
   end
 
-  defp hertz_to_ms(rate) do
-    rate
-    |> Unit.convert!("hertz")
-    |> Units.extract_float()
-    |> then(&round(1000 / &1))
+  # Interrupt mode is clocked by the sensor's own INT1 line, so it has no loop.
+  defp rebuild_loop(%{mode: :polling} = state, new_opts) do
+    state.loop
+    |> BB.Loop.cancel()
+    |> then(&BB.Loop.new(&1.bb, clock: {:rate, new_opts.publish_rate}))
+    |> BB.Loop.arm()
   end
 
-  defp schedule_tick(ms) do
-    Process.send_after(self(), :tick, ms)
-  end
+  defp rebuild_loop(state, _new_opts), do: Map.get(state, :loop)
 end
