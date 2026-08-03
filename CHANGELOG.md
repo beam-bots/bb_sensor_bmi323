@@ -10,6 +10,19 @@ See [Conventional Commits](Https://conventionalcommits.org) for commit guideline
 
 <!-- changelog -->
 
+## [v0.1.4](https://github.com/beam-bots/bb_sensor_bmi323/compare/v0.1.3...v0.1.4) (2026-08-03)
+
+
+
+
+### Bug Fixes:
+
+* test: expect paren-less DSL from the installer (#47) by James Harton
+
+### Improvements:
+
+* drive the polling loop from `BB.Loop` (#49) by James Harton
+
 ## [v0.1.3](https://github.com/beam-bots/bb_sensor_bmi323/compare/v0.1.2...v0.1.3) (2026-06-25)
 
 
